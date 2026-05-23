@@ -1,0 +1,16 @@
+# Operator-local env file (don't commit secrets, even shared ones).
+.env
+
+# State directory — Claude conversation snapshots taken by snapshot-context.sh.
+# Per-operator; not shared.
+state/
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*.swo
+.vscode/
+
+# Bundle staging artifacts (created by start-sandbox.sh in /tmp; this is
+# defense against someone accidentally running it in-tree)
+bundle/

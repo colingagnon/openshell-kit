@@ -1,0 +1,223 @@
+# OpenShell sandbox policy — openshell-kit baseline.
+#
+# Allows: git clone/fetch/push against github.com + gitlab.com, their
+# REST/GraphQL APIs (gated to safe + creation-only mutations), the Claude
+# Code API surface (including the 2026-05 OAuth domain migration + the
+# native build's resolved binary paths).
+#
+# Optional blocks (commented out by default; uncomment to enable):
+#   npm     — npm package registry
+#   pypi    — Python package indexes
+#   ollama  — raw L4 passthrough to a host-side Ollama for local LLM dev
+#
+# Everything not in an allow block is DENIED at the egress proxy.
+#
+# ⚠ SECURITY NOTE — git mutations are NOT yet gated through a wrapper.
+# This baseline allows `git push` (receive-pack) directly from the
+# /usr/bin/git binary. In-sandbox agents can push to your remotes
+# without going through any commit-policy wrapper. If you need
+# protected-branch refusals, no-force-push, no-bypass-hooks, etc., see
+# README.md → "Restricting git" for the L7-split recipe.
+
+version: 1
+
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /etc
+    - /var/log
+  read_write: [/sandbox, /tmp, /dev/null]
+landlock:
+  compatibility: best_effort
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+network_policies:
+  # ── GitHub: git operations (clone, fetch, push) ─────────────
+  github_git:
+    name: github-git
+    endpoints:
+      - host: github.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: GET,  path: "/**/info/refs*" }
+          - allow: { method: POST, path: "/**/git-upload-pack" }
+          - allow: { method: POST, path: "/**/git-receive-pack" }   # ← push (see README → "Restricting git")
+    binaries:
+      - { path: /usr/bin/git }
+
+  # ── GitHub: REST + GraphQL API ──────────────────────────────
+  # Broad read access; writes scoped to non-destructive creation
+  # operations (PRs, issues, comments, branches — not merge, approve,
+  # delete). Tighten further to match your specific risk appetite.
+  github_api:
+    name: github-api
+    endpoints:
+      - host: api.github.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: GET,  path: "/**" }
+          - allow: { method: HEAD, path: "/**" }
+          - allow: { method: POST,  path: "/repos/*/*/pulls" }
+          - allow: { method: PATCH, path: "/repos/*/*/pulls/*" }
+          - allow: { method: POST,  path: "/repos/*/*/issues" }
+          - allow: { method: PATCH, path: "/repos/*/*/issues/*" }
+          - allow: { method: POST,  path: "/repos/*/*/issues/*/comments" }
+          - allow: { method: POST,  path: "/repos/*/*/pulls/*/comments" }
+          - allow: { method: POST,  path: "/repos/*/*/git/refs" }
+          - allow: { method: POST,  path: "/graphql" }
+    binaries:
+      - { path: /usr/local/bin/claude }
+      - { path: /usr/bin/curl }
+      - { path: /usr/bin/gh }
+
+  # ── GitLab: git operations (clone, fetch, push) ─────────────
+  gitlab_git:
+    name: gitlab-git
+    endpoints:
+      - host: gitlab.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: GET,  path: "/**/info/refs*" }
+          - allow: { method: POST, path: "/**/git-upload-pack" }
+          - allow: { method: POST, path: "/**/git-receive-pack" }   # ← push (see README → "Restricting git")
+    binaries:
+      - { path: /usr/bin/git }
+
+  # ── GitLab: REST + GraphQL API ──────────────────────────────
+  gitlab_api:
+    name: gitlab-api
+    endpoints:
+      - host: gitlab.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: GET,  path: "/api/**" }
+          - allow: { method: HEAD, path: "/api/**" }
+          - allow: { method: POST, path: "/api/v4/projects/*/merge_requests" }
+          - allow: { method: PUT,  path: "/api/v4/projects/*/merge_requests/*" }
+          - allow: { method: POST, path: "/api/v4/projects/*/issues" }
+          - allow: { method: PUT,  path: "/api/v4/projects/*/issues/*" }
+          - allow: { method: POST, path: "/api/v4/projects/*/merge_requests/*/notes" }
+          - allow: { method: POST, path: "/api/v4/projects/*/issues/*/notes" }
+          - allow: { method: POST, path: "/api/v4/projects/*/repository/branches" }
+          - allow: { method: POST, path: "/api/graphql" }
+    binaries:
+      - { path: /usr/local/bin/claude }
+      - { path: /usr/bin/curl }
+      - { path: /usr/local/bin/glab }
+
+  # ── Claude Code API + plugin marketplace ────────────────────
+  # github.com / api.github.com / *.githubusercontent.com are listed
+  # here (not just under github_git/github_api) so the claude binary
+  # itself can reach them during `claude plugin marketplace add` and
+  # `claude plugin install`.
+  #
+  # IMPORTANT — the binaries list covers TWO things you might miss:
+  #   1. claude.com is the OAuth authorize host as of the 2026-05
+  #      domain migration. Without it `claude /login` 403s.
+  #   2. `claude install` (run by sandbox-init.sh) lands the native
+  #      build at ~/.local/bin/claude → ~/.local/share/claude/versions/
+  #      <ver>. The proxy resolves /proc/<pid>/exe through the symlink,
+  #      so the version-agnostic glob is the load-bearing entry.
+  claude_code:
+    name: claude-code
+    endpoints:
+      - { host: api.anthropic.com,             port: 443 }
+      - { host: claude.com,                    port: 443 }   # OAuth authorize (2026-05 migration)
+      - { host: platform.claude.com,           port: 443 }   # OAuth callback
+      - { host: downloads.claude.ai,           port: 443 }   # native-build download
+      - { host: statsig.anthropic.com,         port: 443 }
+      - { host: sentry.io,                     port: 443 }
+      - { host: github.com,                    port: 443 }   # plugin marketplace
+      - { host: api.github.com,                port: 443 }
+      - { host: raw.githubusercontent.com,     port: 443 }
+      - { host: objects.githubusercontent.com, port: 443 }
+      - { host: storage.googleapis.com,        port: 443 }
+    binaries:
+      - { path: /usr/local/bin/claude }                              # npm install
+      - { path: "/sandbox/.local/bin/claude" }                       # native build (symlink)
+      - { path: "/sandbox/.local/share/claude/versions/*" }          # native build (resolved real path — LOAD-BEARING)
+      - { path: /usr/bin/node }
+      - { path: /usr/bin/git }
+
+  # ── Package managers (uncomment to enable) ──────────────────
+  #
+  # npm:
+  #   name: npm
+  #   endpoints:
+  #     - { host: registry.npmjs.org, port: 443 }
+  #   binaries:
+  #     - { path: /usr/bin/node }
+  #     - { path: /usr/local/bin/npm }
+  #     - { path: /usr/local/bin/npx }
+  #
+  # pypi:
+  #   name: pypi
+  #   endpoints:
+  #     - { host: pypi.org,               port: 443 }
+  #     - { host: files.pythonhosted.org, port: 443 }
+  #     - { host: downloads.python.org,   port: 443 }
+  #   binaries:
+  #     - { path: /usr/local/bin/uv }
+  #     - { path: "/sandbox/.venv/bin/pip" }
+  #     # The proxy gates on the RESOLVED real path. /sandbox/.venv/bin/python
+  #     # is typically a symlink into uv's managed interpreter; if you
+  #     # uncomment this block you may also need the uv-managed real path:
+  #     - { path: "/sandbox/.venv/bin/python*" }
+  #     - { path: "/sandbox/.uv/python/*/bin/python3*" }
+  #     - { path: "/usr/bin/python3*" }
+
+  # ── Host Ollama (uncomment to enable; multi-model local dev) ─────
+  #
+  # Direct L4 passthrough to an Ollama server running on the gateway
+  # host. Use this when you want raw access to the Ollama native API
+  # from inside a sandbox (any model, full /api/* surface) rather than
+  # OpenShell's managed inference (which pins one model gateway-wide).
+  #
+  # In-sandbox clients MUST target host.openshell.internal (injected by
+  # OpenShell), NOT localhost/127.0.0.1 — inside the sandbox those mean
+  # the sandbox itself.
+  #
+  # The `allowed_ips` entry is REQUIRED. host.openshell.internal resolves
+  # to a private IP (the Docker host gateway). The proxy's SSRF guard
+  # blocks any hostname that resolves to a private/RFC1918/loopback IP
+  # by default, regardless of the endpoint allowlist. `allowed_ips` is
+  # the documented SSRF override. Verify the resolved IP from inside a
+  # sandbox before deploying:
+  #
+  #     ssh openshell-<your-sandbox> 'getent hosts host.openshell.internal'
+  #
+  # 192.168.65.254 is correct for Docker Desktop's host gateway (WSL2
+  # and macOS). Other gateway topologies may resolve to something else.
+  #
+  # Host-side prerequisite: Ollama running on the host machine. On WSL2
+  # + Docker Desktop you do NOT need to rebind Ollama to 0.0.0.0; its
+  # default 127.0.0.1 is reachable via WSL2 localhost-forwarding +
+  # Docker Desktop's host gateway. On other topologies you may need
+  # `OLLAMA_HOST=0.0.0.0:11434 ollama serve` (which exposes Ollama on
+  # the LAN — confirm your firewall posture before doing this).
+  #
+  # ollama:
+  #   name: ollama
+  #   endpoints:
+  #     - host: host.openshell.internal
+  #       port: 11434
+  #       allowed_ips: ["192.168.65.254"]
+  #   binaries:
+  #     - { path: /usr/bin/curl }
+  #     - { path: /usr/bin/node }
+  #     - { path: "/sandbox/.venv/bin/python*" }
+  #     - { path: "/sandbox/.uv/python/*/bin/python3*" }
