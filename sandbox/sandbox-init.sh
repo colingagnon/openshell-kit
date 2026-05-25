@@ -119,6 +119,14 @@ fi
 if ! grep -q 'CLAUDE_LAUNCHED' "${HOME}/.bashrc" 2>/dev/null; then
     cat >> "${HOME}/.bashrc" <<'BASHRC'
 
+# Disable claude's TUI mouse capture so tmux's click+drag → copy-mode
+# trigger still fires inside a sandbox claude session. Without this,
+# claude 2.1.132+ captures all mouse events for its own UI, breaking
+# tmux's drag-to-select. Documented via claude-code issues #58364,
+# #56881. Exported (not just per-invocation) so manual relaunches
+# inherit it too.
+export CLAUDE_CODE_DISABLE_MOUSE=1
+
 # Auto-launch Claude on interactive connect (added by sandbox-init).
 # Uses PATH-resolved `claude` so the native build (~/.local/bin/claude)
 # wins over the npm install (/usr/local/bin/claude) when present.
