@@ -59,13 +59,33 @@ osk::resolve_gitlab_token() {
 }
 
 # ── Gateway lifecycle ────────────────────────────────────────
-# Ensure the OpenShell gateway is reachable. Doesn't start it; just
-# verifies. Starting the gateway is a one-time operator step
-# (`openshell gateway start`).
+# Ensure the OpenShell gateway is reachable. v0.0.37+: gateway is a
+# systemd user service (openshell-gateway on https://127.0.0.1:17670)
+# installed by the .deb / Homebrew package. We verify it's running
+# and auto-register the CLI if needed; we don't try to start the
+# service ourselves.
 osk::ensure_gateway() {
-    if ! openshell gateway status >/dev/null 2>&1; then
-        osk::die "openshell gateway is not reachable. Start it once with 'openshell gateway start' and re-run."
+    if openshell sandbox list >/dev/null 2>&1; then
+        return 0
     fi
+
+    if ! systemctl --user is-active --quiet openshell-gateway 2>/dev/null; then
+        osk::err "openshell-gateway systemd service is not running"
+        osk::err "  start it:  systemctl --user start openshell-gateway"
+        osk::err "  inspect:   journalctl --user -u openshell-gateway -e"
+        osk::die "gateway service must be running before openshell-kit can provision sandboxes"
+    fi
+
+    osk::info "registering local gateway with CLI"
+    openshell gateway add https://127.0.0.1:17670 --local >/dev/null 2>&1 \
+        || osk::die "failed to register gateway: run 'openshell gateway add https://127.0.0.1:17670 --local' and re-try"
+
+    local i
+    for i in $(seq 1 10); do
+        openshell sandbox list >/dev/null 2>&1 && return 0
+        sleep 1
+    done
+    osk::die "gateway registered but did not become reachable within 10s"
 }
 
 # ── Provider provisioning (idempotent) ───────────────────────
@@ -87,8 +107,10 @@ osk::ensure_provider() {
             ;;
         gitlab)
             [[ -n "${GITLAB_TOKEN_RESOLVED:-}" ]] || osk::die "GITLAB_TOKEN_RESOLVED not set"
-            GITLAB_TOKEN="$GITLAB_TOKEN_RESOLVED" \
-                openshell provider create --name "$name" --type gitlab --from-existing \
+            # v0.0.50: --from-existing no longer discovers gitlab. Pass
+            # the credential explicitly. (--type gitlab itself still works.)
+            openshell provider create --name "$name" --type gitlab \
+                --credential "GITLAB_TOKEN=$GITLAB_TOKEN_RESOLVED" \
                 || osk::die "failed to create gitlab provider"
             ;;
         *)

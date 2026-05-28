@@ -65,11 +65,18 @@ if osk::resolve_gitlab_token; then
 fi
 
 # ── Stage upload bundle ──────────────────────────────────────
-# Bundle = the contents of sandbox/. Everything in there lands at
-# /sandbox/ inside the new sandbox. sandbox-init.sh reads from there
-# at boot.
-BUNDLE=$(mktemp -d)
-trap 'rm -rf "$BUNDLE"' EXIT
+# Bundle = the contents of sandbox/. After upload they should land at
+# /sandbox/ inside the new sandbox so sandbox-init.sh's hardcoded
+# /sandbox/* paths still resolve.
+#
+# v0.0.50: `--upload <SRC>:<DEST>` places SRC as a child of DEST
+# (preserves its basename). We use a stable name ("bootstrap") so the
+# in-sandbox entrypoint can find it predictably, then `cp -rT` the
+# contents up into /sandbox/.
+STAGE_PARENT=$(mktemp -d)
+trap 'rm -rf "$STAGE_PARENT"' EXIT
+BUNDLE="$STAGE_PARENT/bootstrap"
+mkdir -p "$BUNDLE"
 cp -a "${OSK_ROOT}/sandbox/." "${BUNDLE}/"
 
 POLICY="${OSK_ROOT}/sandbox/policy.yaml"
@@ -81,14 +88,15 @@ osk::info "creating sandbox: ${NAME}"
 CREATE_ARGS=(
     --name "$NAME"
     --policy "$POLICY"
-    --upload "${BUNDLE}/"
+    --upload "${BUNDLE}:/sandbox/"
 )
 
 # Wire in the github + gitlab providers if they exist (silent skip otherwise).
 openshell provider get github >/dev/null 2>&1 && CREATE_ARGS+=(--provider github)
 openshell provider get gitlab >/dev/null 2>&1 && CREATE_ARGS+=(--provider gitlab)
 
-openshell sandbox create "${CREATE_ARGS[@]}" -- bash -c '/sandbox/sandbox-init.sh' \
+openshell sandbox create "${CREATE_ARGS[@]}" -- bash -c \
+    'set -e; cp -rT /sandbox/bootstrap/. /sandbox/ && rm -rf /sandbox/bootstrap && chmod +x /sandbox/sandbox-init.sh && /sandbox/sandbox-init.sh' \
     || osk::die "openshell sandbox create failed for '$NAME'"
 
 # ── Register SSH alias ──────────────────────────────────────
