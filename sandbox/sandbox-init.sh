@@ -71,21 +71,37 @@ if [[ ! -d "${HUD_INSTALLED}" ]] || [[ -z "$(ls -A "${HUD_INSTALLED}" 2>/dev/nul
 fi
 
 # ── Install Claude native build ──────────────────────────────
-# /usr/local/bin/claude is the npm-distributed install; `claude install`
-# fetches the native build from downloads.claude.ai and drops it at
-# ~/.local/bin/claude. Once installed (and ~/.local/bin is on PATH via
-# the .bashrc edit below), claude resolves to the native build.
+# Preferred path: start-sandbox.sh staged the host's native claude binary
+# at /sandbox/claude-bin/<version>. Install from there — no download,
+# no `claude install` step. Falls back to running `claude install` from
+# inside the sandbox if no host binary was staged.
 #
 # IMPORTANT: the egress proxy gates on the *resolved* binary path, so
 # the native build path must be in claude_code.binaries in policy.yaml.
 # That entry is already there in the shipped baseline.
-{
-    claude install || true
-} &>/tmp/logs/claude-install-native.log
-if [[ -x "${HOME}/.local/bin/claude" ]]; then
-    echo "Claude native build installed."
+mkdir -p /tmp/logs
+shopt -s nullglob
+STAGED_CLAUDE=(/sandbox/claude-bin/*)
+shopt -u nullglob
+if (( ${#STAGED_CLAUDE[@]} > 0 )) && [[ -x "${STAGED_CLAUDE[0]}" ]]; then
+    version=$(basename "${STAGED_CLAUDE[0]}")
+    install -m 0755 -D "${STAGED_CLAUDE[0]}" "${HOME}/.local/share/claude/versions/${version}"
+    mkdir -p "${HOME}/.local/bin"
+    ln -sfn "${HOME}/.local/share/claude/versions/${version}" "${HOME}/.local/bin/claude"
+    echo "Claude native build installed from host bundle: ${version}"
 else
-    echo "WARN: Claude native install didn't land at ~/.local/bin/claude (log: /tmp/logs/claude-install-native.log)."
+    # Fallback: `claude install` fetches the native build from
+    # storage.googleapis.com. timeout+kill-after handles the rare case
+    # where its `npm uninstall` step wedges in a stopped (T) state and
+    # ignores SIGTERM.
+    {
+        timeout --kill-after=10s 60 claude install < /dev/null || true
+    } &>/tmp/logs/claude-install-native.log
+    if [[ -x "${HOME}/.local/bin/claude" ]]; then
+        echo "Claude native build installed (via claude install)."
+    else
+        echo "WARN: Claude native install didn't land at ~/.local/bin/claude (log: /tmp/logs/claude-install-native.log)."
+    fi
 fi
 
 # Ensure ~/.local/bin is on PATH for future shells.

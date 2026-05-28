@@ -79,6 +79,21 @@ BUNDLE="$STAGE_PARENT/bootstrap"
 mkdir -p "$BUNDLE"
 cp -a "${OSK_ROOT}/sandbox/." "${BUNDLE}/"
 
+# Stage host native claude binary (~230MB) when present so sandbox-init.sh
+# installs it directly instead of running `claude install` (which downloads
+# from storage.googleapis.com and has been observed wedging in a stopped-T
+# state during its `npm uninstall` step). Silently skipped if the host
+# doesn't have native claude — init falls back to `claude install`.
+HOST_CLAUDE_LINK="${HOME}/.local/bin/claude"
+if [[ -L "$HOST_CLAUDE_LINK" ]]; then
+    HOST_CLAUDE_BIN="$(readlink -f "$HOST_CLAUDE_LINK")"
+    if [[ -x "$HOST_CLAUDE_BIN" ]]; then
+        mkdir -p "$BUNDLE/claude-bin"
+        cp "$HOST_CLAUDE_BIN" "$BUNDLE/claude-bin/$(basename "$HOST_CLAUDE_BIN")"
+        osk::info "native claude staged: $(basename "$HOST_CLAUDE_BIN") ($(du -h "$HOST_CLAUDE_BIN" | cut -f1))"
+    fi
+fi
+
 POLICY="${OSK_ROOT}/sandbox/policy.yaml"
 [[ -f "$POLICY" ]] || osk::die "policy file missing: $POLICY"
 
