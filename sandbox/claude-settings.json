@@ -16,7 +16,7 @@
   "enabledPlugins": {
     "claude-hud@claude-hud": true
   },
-  "model": "claude-sonnet-4-7",
+  "model": "claude-sonnet-4-6",
   "effortLevel": "medium",
   "permissions": {
     "defaultMode": "bypassPermissions"
